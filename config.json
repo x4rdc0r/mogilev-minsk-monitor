@@ -6,8 +6,8 @@
   "direction": "mogilev-minsk",
   "windows": [
     {
-      "start": "16:30",
-      "end": "20:00"
+      "start": "06:00",
+      "end": "09:00"
     }
   ],
   "min_free_seats": 1,
