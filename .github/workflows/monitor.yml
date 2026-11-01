@@ -24,6 +24,10 @@ on:
         description: "Интервал между проверками в секундах (по умолчанию 150)"
         type: string
         default: ""
+      no_relay:
+        description: "Не передавать эстафету (для отладочных коротких прогонов)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -65,7 +69,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CHECK_INTERVAL: ${{ inputs.interval || '150' }}
           LOOP_SECONDS: ${{ inputs.loop_seconds || '20700' }}
-          RELAY: ${{ inputs.loop_seconds && '0' || '1' }}
         run: |
           set -u
           interval="${CHECK_INTERVAL:-150}"
@@ -105,7 +108,7 @@ jobs:
           done
 
       - name: Передать эстафету
-        if: ${{ success() && !(inputs.dry_run || inputs.test_message) && inputs.loop_seconds == '' }}
+        if: ${{ success() && !(inputs.dry_run || inputs.test_message) && !inputs.no_relay }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
