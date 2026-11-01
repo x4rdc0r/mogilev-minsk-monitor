@@ -336,7 +336,7 @@ def trigger_check() -> str:
             "<code>python monitor.py</code>"
         )
     url = f"https://api.github.com/repos/{REPO}/actions/workflows/monitor.yml/dispatches"
-    body = json.dumps({"ref": "main"}).encode("utf-8")
+    body = json.dumps({"ref": "main", "inputs": {"once": "true"}}).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=body,
@@ -523,6 +523,7 @@ def handle_update(update: dict) -> None:
 def run(max_minutes: int) -> None:
     deadline = time.time() + max_minutes * 60
     offset: int | None = None
+    last_pull = time.time()
 
     try:
         backlog = call("getUpdates", {"offset": "-1", "limit": "1", "timeout": "0"})

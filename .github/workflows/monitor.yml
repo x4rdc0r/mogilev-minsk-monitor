@@ -8,6 +8,10 @@ on:
     - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
+      once:
+        description: "Разовая проверка (кнопка «Проверить» в боте)"
+        type: boolean
+        default: false
       dry_run:
         description: "Проверить без отправки в Telegram"
         type: boolean
@@ -34,10 +38,10 @@ permissions:
   actions: write
 
 concurrency:
-  group: seat-monitor
-  # true — чтобы кнопка «Проверить» в боте сразу перезапускала цикл,
-  # а не ждала окончания текущего шестичасового прогона.
-  cancel-in-progress: true
+  # Разовая проверка живёт в отдельной группе: она не обрывает длинную цепочку.
+  group: seat-monitor-${{ (inputs.once || inputs.dry_run || inputs.test_message) && 'once' || 'chain' }}
+  # В группе разовых проверок новая отменяет старую; цепочку не отменяем.
+  cancel-in-progress: ${{ inputs.once || inputs.dry_run || inputs.test_message || false }}
 
 jobs:
   check:
@@ -54,8 +58,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Разовый запуск (dry-run / тест)
-        if: ${{ inputs.dry_run || inputs.test_message }}
+      - name: Разовый запуск (разово / dry-run / тест)
+        if: ${{ inputs.once || inputs.dry_run || inputs.test_message }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -63,7 +67,7 @@ jobs:
         run: python monitor.py ${{ inputs.test_message && '--test' || '' }}
 
       - name: Проверки в цикле
-        if: ${{ !(inputs.dry_run || inputs.test_message) }}
+        if: ${{ !(inputs.once || inputs.dry_run || inputs.test_message) }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -78,6 +82,13 @@ jobs:
 
           while [ "$(date +%s)" -lt "$deadline" ]; do
             run=$((run + 1))
+
+            # Подтягиваем настройки, которые бот записал в config.json,
+            # и правки кода. state.json к этому моменту закоммичен.
+            if ! git pull --rebase --autostash origin main >/dev/null 2>&1; then
+              git rebase --abort >/dev/null 2>&1 || true
+            fi
+
             echo "── проверка #$run, $(date -u +%H:%M:%SZ)"
             python monitor.py || echo "::warning::monitor.py завершился с ошибкой"
 
@@ -108,7 +119,7 @@ jobs:
           done
 
       - name: Передать эстафету
-        if: ${{ success() && !(inputs.dry_run || inputs.test_message) && !inputs.no_relay }}
+        if: ${{ success() && !(inputs.once || inputs.dry_run || inputs.test_message) && !inputs.no_relay }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -126,4 +137,26 @@ jobs:
             sleep 5
           done
           echo "::error::не удалось передать эстафету следующему запуску"
+          exit 1
+
+      - name: Сохранить состояние разовой проверки
+        if: ${{ (inputs.once || inputs.dry_run) && success() }}
+        run: |
+          set -e
+          git add state.json
+          if git diff --cached --quiet; then
+            echo "state.json без изменений"
+            exit 0
+          fi
+          git -c user.name="seat-monitor" \
+              -c user.email="seat-monitor@users.noreply.github.com" \
+              commit -q -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase --autostash origin main >/dev/null 2>&1 || true
+            if git push -q; then
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "не удалось сохранить state.json" >&2
           exit 1
