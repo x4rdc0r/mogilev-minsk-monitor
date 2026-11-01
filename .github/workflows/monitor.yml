@@ -39,9 +39,9 @@ permissions:
 
 concurrency:
   # Разовая проверка живёт в отдельной группе: она не обрывает длинную цепочку.
-  group: seat-monitor-${{ (inputs.once || inputs.dry_run || inputs.test_message) && 'once' || 'chain' }}
+  group: seat-monitor-${{ (inputs.once || inputs.dry_run || inputs.test_message || inputs.no_relay) && 'once' || 'chain' }}
   # В группе разовых проверок новая отменяет старую; цепочку не отменяем.
-  cancel-in-progress: ${{ inputs.once || inputs.dry_run || inputs.test_message || false }}
+  cancel-in-progress: ${{ inputs.once || inputs.dry_run || inputs.test_message || inputs.no_relay || false }}
 
 jobs:
   check:
@@ -67,8 +67,7 @@ jobs:
         run: python monitor.py ${{ inputs.test_message && '--test' || '' }}
 
       - name: Проверки в цикле
-        if: ${{ !(inputs.once || inputs.dry_run || inputs.test_message) }}
-        env:
+        if: ${{ !(inputs.once || inputs.dry_run || inputs.test_message) }}        env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CHECK_INTERVAL: ${{ inputs.interval || '150' }}
