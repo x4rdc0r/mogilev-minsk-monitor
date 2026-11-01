@@ -304,17 +304,21 @@ def main(argv: list[str]) -> int:
             log(f"ОШИБКА отправки уведомления: {exc}")
             return 1
 
-    save_state(
-        {
-            "date": TARGET_DATE,
-            "available": available,
-            "observed": current,
-            "updated": datetime.now(timezone.utc)
-            .replace(microsecond=0)
-            .isoformat()
-            .replace("+00:00", "Z"),
-        }
-    )
+    state_unchanged = state.get("date") == TARGET_DATE and previous == available
+    if state_unchanged:
+        log("состояние не изменилось — state.json не трогаем")
+    else:
+        save_state(
+            {
+                "date": TARGET_DATE,
+                "available": available,
+                "observed": current,
+                "updated": datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            }
+        )
 
     if not newly:
         log("новых свободных мест нет")
