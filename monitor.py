@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Мониторинг свободных мест Могилёв -> Минск на 08.11.2026, окно 16:30–20:00.
+"""Мониторинг свободных мест Могилёв ⇄ Минск по настройкам из config.json.
 
 Источники:
   * mogilevminsk.by — API платформы Transporter (free_seats, показ с потолком 2);
   * avto-slava.by   — та же платформа, тот же API;
-  * atlasbus.by     — Next.js: данные рейсов лежат в __NEXT_DATA__ страницы
-                      маршрута с параметром ?date=YYYY-MM-DD.
+  * atlasbus.by     — Next.js: рейсы лежат в __NEXT_DATA__ страницы маршрута ?date=.
 
-Зависимостей нет — только стандартная библиотека Python 3.
+Настройки (config.json) задаёт Telegram-бот, но файл можно править и руками.
 
 Запуск:
     python monitor.py            # проверка + уведомление в Telegram
-    python monitor.py --show     # показать доступность по всем источникам
-    python monitor.py --dry-run  # без реальной отправки в Telegram
-    python monitor.py --test     # только тестовое сообщение в Telegram
+    python monitor.py --show     # показать доступность без уведомлений
+    python monitor.py --dry-run  # проверка без реальной отправки
+    python monitor.py --test     # тестовое сообщение в Telegram
 """
 
 from __future__ import annotations
@@ -36,6 +35,57 @@ USER_AGENT = (
 )
 
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+MAX_DATES = 3
+MAX_WINDOWS = 2
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+DIRECTIONS: dict[str, dict] = {
+    "mogilev-minsk": {
+        "title": "Могилёв → Минск",
+        "from": "Могилёв",
+        "to": "Минск",
+        "from_city": "2",
+        "dest_city": "1",
+        "phones": "788-55-33, 788-66-33",
+    },
+    "minsk-mogilev": {
+        "title": "Минск → Могилёв",
+        "from": "Минск",
+        "to": "Могилёв",
+        "from_city": "1",
+        "dest_city": "2",
+        "phones": "788-55-33, 788-66-33",
+    },
+}
+
+SOURCES: list[dict] = [
+    {
+        "id": "mogilevminsk",
+        "title": "mogilevminsk.by",
+        "kind": "transporter",
+        "base": "https://mogilevminsk.by",
+        "cap": 2,
+        "url": "https://mogilevminsk.by/timetable",
+    },
+    {
+        "id": "avtoslava",
+        "title": "avto-slava.by",
+        "kind": "transporter",
+        "base": "https://avto-slava.by",
+        "cap": 4,
+        "url": "https://avto-slava.by/timetable",
+    },
+    {
+        "id": "atlasbus",
+        "title": "atlasbus.by",
+        "kind": "atlasbus",
+        "base": "https://atlasbus.by",
+        "cap": None,
+        "url": "",
+    },
+]
 
 
 def _load_env_file(path: Path) -> None:
@@ -58,59 +108,107 @@ _load_env_file(Path(__file__).with_name(".env.local"))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-TARGET_DATE = os.getenv("TARGET_DATE", "2026-11-08")  # YYYY-MM-DD
-WINDOW_START = os.getenv("WINDOW_START", "16:30")
-WINDOW_END = os.getenv("WINDOW_END", "20:00")
-MIN_FREE_SEATS = int(os.getenv("MIN_FREE_SEATS", "1"))
+CONFIG_FILE = Path(os.getenv("CONFIG_FILE", "config.json"))
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
-SOURCES_FILTER = {
-    part.strip() for part in os.getenv("SOURCES", "").split(",") if part.strip()
-}
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# Города на платформе Transporter: 2 = Могилёв, 1 = Минск (одинаково на обоих сайтах)
-FROM_CITY = os.getenv("FROM_CITY", "2")
-DEST_CITY = os.getenv("DEST_CITY", "1")
-
-SOURCES: list[dict] = [
-    {
-        "id": "mogilevminsk",
-        "title": "mogilevminsk.by",
-        "kind": "transporter",
-        "base": "https://mogilevminsk.by",
-        "capped": True,
-        "url": "https://mogilevminsk.by/timetable",
-    },
-    {
-        "id": "avtoslava",
-        "title": "avto-slava.by",
-        "kind": "transporter",
-        "base": "https://avto-slava.by",
-        "capped": True,
-        "url": "https://avto-slava.by/timetable",
-    },
-    {
-        "id": "atlasbus",
-        "title": "atlasbus.by",
-        "kind": "atlasbus",
-        "base": "https://atlasbus.by",
-        "capped": False,
-        "url": "https://atlasbus.by/Маршруты/Могилёв/Минск",
-    },
-]
+DEFAULTS: dict = {
+    "enabled": True,
+    "dates": [os.getenv("TARGET_DATE", "2026-11-08")],
+    "direction": os.getenv("DIRECTION", "mogilev-minsk"),
+    "windows": [
+        {
+            "start": os.getenv("WINDOW_START", "16:30"),
+            "end": os.getenv("WINDOW_END", "20:00"),
+        }
+    ],
+    "min_free_seats": int(os.getenv("MIN_FREE_SEATS", "1")),
+}
 
 
 def log(message: str) -> None:
     print(message, flush=True)
 
 
+# ---------------------------------------------------------------- конфиг
+
+
+def valid_date(value: str) -> bool:
+    if not DATE_RE.match(value):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def normalize_window(raw) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    start = str(raw.get("start", "")).strip()
+    end = str(raw.get("end", "")).strip()
+    if not TIME_RE.match(start) or not TIME_RE.match(end) or start >= end:
+        return None
+    return {"start": start, "end": end}
+
+
+def load_config() -> dict:
+    raw: dict = {}
+    try:
+        raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raw = {}
+    except (OSError, ValueError):
+        pass
+
+    cfg = {**DEFAULTS, **{k: v for k, v in raw.items() if v is not None}}
+
+    if isinstance(raw.get("dates"), list):
+        cfg["dates"] = sorted({d for d in raw["dates"] if isinstance(d, str) and valid_date(d)})[
+            :MAX_DATES
+        ]
+    else:
+        cfg["dates"] = [d for d in DEFAULTS["dates"] if valid_date(d)]
+
+    if cfg.get("direction") not in DIRECTIONS:
+        cfg["direction"] = DEFAULTS["direction"]
+
+    if isinstance(raw.get("windows"), list):
+        windows = [w for w in (normalize_window(item) for item in raw["windows"]) if w]
+        cfg["windows"] = windows[:MAX_WINDOWS]
+    else:
+        cfg["windows"] = [normalize_window(w) for w in DEFAULTS["windows"] if normalize_window(w)]
+
+    try:
+        cfg["min_free_seats"] = max(1, int(cfg.get("min_free_seats") or 1))
+    except (TypeError, ValueError):
+        cfg["min_free_seats"] = 1
+
+    cfg["enabled"] = bool(cfg.get("enabled", True))
+    return cfg
+
+
+def windows_label(windows: list[dict]) -> str:
+    if not windows:
+        return "любое время"
+    return ", ".join(f"{w['start']}–{w['end']}" for w in windows)
+
+
+def in_window(departure: str, windows: list[dict]) -> bool:
+    if not windows:
+        return True
+    return any(w["start"] <= departure <= w["end"] for w in windows)
+
+
 # ---------------------------------------------------------------- HTTP
 
 
-def _request(url: str, data: bytes | None = None, headers: dict | None = None,
-             timeout: int = 40) -> str:
+def _request(
+    url: str, data: bytes | None = None, headers: dict | None = None, timeout: int = 40
+) -> str:
     request_headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
@@ -160,13 +258,21 @@ def _multipart(fields: dict[str, str]) -> tuple[bytes, dict[str, str]]:
 # ---------------------------------------------------------------- источники
 
 
-def fetch_transporter(source: dict, date_str: str) -> dict[str, dict]:
+def to_dmy(date_str: str) -> str:
+    return datetime.strptime(date_str, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+
+def fetch_transporter(source: dict, date_str: str, direction: dict) -> dict[str, dict]:
     """Сайты на платформе Transporter: /timetable/trips/ отдаёт free_seats."""
     body, headers = _multipart(
-        {"date": date_str, "from_city": FROM_CITY, "dest_city": DEST_CITY}
+        {
+            "date": date_str,
+            "from_city": direction["from_city"],
+            "dest_city": direction["dest_city"],
+        }
     )
 
-    def call() -> dict:
+    def call() -> list[dict]:
         text = _request(
             source["base"] + "/timetable/trips/",
             data=body,
@@ -186,31 +292,24 @@ def fetch_transporter(source: dict, date_str: str) -> dict[str, dict]:
         if str(trip.get("date", "")) != dmy:
             continue
         departure = str(trip.get("departure_time", ""))[:5]
-        if not in_window(departure):
-            continue
         try:
             free = int(trip.get("free_seats") or 0)
         except (TypeError, ValueError):
             free = 0
-        # одинаковое время у разных рейсов — оставляем лучший вариант
         previous = result.get(departure)
         if previous is None or free > previous["free"]:
             result[departure] = {"free": free, "carrier": None}
     return result
 
 
-def fetch_atlasbus(source: dict, date_str: str) -> dict[str, dict]:
+def fetch_atlasbus(source: dict, date_str: str, direction: dict) -> dict[str, dict]:
     """Atlasbus (Next.js): рейсы на дату лежат в __NEXT_DATA__ страницы маршрута."""
-    path = "/".join(
-        urllib.parse.quote(part) for part in ("Маршруты", "Могилёв", "Минск")
-    )
+    path = "/".join(urllib.parse.quote(part) for part in ("Маршруты", direction["from"], direction["to"]))
     url = f"{source['base']}/{path}?date={date_str}"
 
-    def call() -> dict:
+    def call() -> list[dict]:
         html = _request(url, timeout=60)
-        match = re.search(
-            r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S
-        )
+        match = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
         if not match:
             raise RuntimeError("не нашёл __NEXT_DATA__ на странице")
         data = json.loads(match.group(1))
@@ -224,8 +323,6 @@ def fetch_atlasbus(source: dict, date_str: str) -> dict[str, dict]:
         if not departure_full.startswith(date_str):
             continue
         departure = departure_full[11:16]
-        if not in_window(departure):
-            continue
         try:
             free = int(ride.get("freeSeats") or 0)
         except (TypeError, ValueError):
@@ -240,33 +337,45 @@ def fetch_atlasbus(source: dict, date_str: str) -> dict[str, dict]:
 FETCHERS = {"transporter": fetch_transporter, "atlasbus": fetch_atlasbus}
 
 
-# ---------------------------------------------------------------- утилиты
+# ---------------------------------------------------------------- сбор данных
 
 
-def to_dmy(date_str: str) -> str:
-    return datetime.strptime(date_str, "%Y-%m-%d").strftime("%d-%m-%Y")
+def collect(config: dict) -> tuple[dict, list[str]]:
+    direction = DIRECTIONS[config["direction"]]
+    results: dict[str, dict] = {}
+    errors: list[str] = []
+
+    for date_str in config["dates"]:
+        per_source: dict[str, dict] = {}
+        for source in SOURCES:
+            try:
+                rides = FETCHERS[source["kind"]](source, date_str, direction)
+            except Exception as exc:  # noqa: BLE001
+                log(f"  {date_str} {source['title']}: ОШИБКА — {exc}")
+                errors.append(f"{date_str} {source['title']}")
+                per_source[source["id"]] = {"failed": True, "rides": {}, "available": {}}
+                continue
+
+            rides = {
+                departure: entry
+                for departure, entry in rides.items()
+                if in_window(departure, config["windows"])
+            }
+            available = {
+                departure: entry
+                for departure, entry in rides.items()
+                if entry["free"] >= config["min_free_seats"]
+            }
+            per_source[source["id"]] = {"failed": False, "rides": rides, "available": available}
+            log(
+                f"  {date_str} {source['title']}: рейсов {len(rides)}, свободных {len(available)}"
+            )
+        results[date_str] = per_source
+
+    return results, errors
 
 
-def weekday_ru(date_str: str) -> str:
-    return WEEKDAYS[datetime.strptime(date_str, "%Y-%m-%d").weekday()]
-
-
-def in_window(departure: str) -> bool:
-    return bool(departure) and WINDOW_START <= departure <= WINDOW_END
-
-
-def plural_seats(count: int) -> str:
-    if count % 10 == 1 and count % 100 != 11:
-        return "место"
-    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
-        return "места"
-    return "мест"
-
-
-def format_free(count: int, capped: bool) -> str:
-    if capped and count >= 2:
-        return "≥2 места"
-    return f"{count} {plural_seats(count)}"
+# ---------------------------------------------------------------- состояние
 
 
 def load_state() -> dict:
@@ -323,65 +432,96 @@ def send_telegram(text: str, dry_run: bool) -> None:
     chat_id = resolve_chat_id()
     tg_call(
         "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": "true",
-        },
+        {"chat_id": chat_id, "text": text, "disable_web_page_preview": "true"},
     )
     log(f"уведомление отправлено в чат {chat_id}")
 
 
-def build_message(results: dict[str, dict], newly: list[tuple[str, str]], date_str: str) -> str:
+# ---------------------------------------------------------------- сообщение
+
+
+def plural_seats(count: int) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        return "место"
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "места"
+    return "мест"
+
+
+def format_free(count: int, cap: int | None) -> str:
+    """Сайты Transporter отдают места с потолком (2 и 4) — показываем «≥N»."""
+    if cap and count >= cap:
+        return f"≥{cap} {plural_seats(cap)}"
+    return f"{count} {plural_seats(count)}"
+
+
+def source_url(source: dict, config: dict, date_str: str) -> str:
+    if source["kind"] == "atlasbus":
+        direction = DIRECTIONS[config["direction"]]
+        return (
+            f"https://atlasbus.by/Маршруты/{direction['from']}/{direction['to']}"
+            f"?date={date_str}"
+        )
+    return source["url"]
+
+
+def build_message(
+    config: dict, results: dict, newly: list[tuple[str, str, str]]
+) -> str:
+    direction = DIRECTIONS[config["direction"]]
     by_id = {source["id"]: source for source in SOURCES}
+
     lines = [
-        "🎫 Свободные места: Могилёв → Минск",
-        f"{datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')} "
-        f"({weekday_ru(date_str)}), окно {WINDOW_START}–{WINDOW_END}",
-        "",
-        "Новое:",
+        f"🎫 Свободные места: {direction['title']}",
+        f"Окно: {windows_label(config['windows'])}",
     ]
 
-    for source_id, departure in newly:
-        source = by_id[source_id]
-        entry = results[source_id]["available"][departure]
-        carrier = f" — {entry['carrier']}" if entry.get("carrier") else ""
-        lines.append(
-            f"• {source['title']} — {departure} "
-            f"({format_free(entry['free'], source['capped'])}){carrier}"
-        )
+    for date_str in config["dates"]:
+        date_label = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+        weekday = WEEKDAYS[datetime.strptime(date_str, "%Y-%m-%d").weekday()]
+        lines.append("")
+        lines.append(f"📅 {date_label} ({weekday})")
+
+        date_new = [item for item in newly if item[0] == date_str]
+        if date_new:
+            lines.append("Новое:")
+            for _, source_id, departure in date_new:
+                entry = results[date_str][source_id]["available"][departure]
+                carrier = f" — {entry['carrier']}" if entry.get("carrier") else ""
+                lines.append(
+                    f"• {by_id[source_id]['title']} — {departure} "
+                    f"({format_free(entry['free'], by_id[source_id]['cap'])}){carrier}"
+                )
+            lines.append("")
+
+        lines.append("Сейчас свободно:")
+        for source in SOURCES:
+            result = results[date_str].get(source["id"]) or {}
+            if result.get("failed"):
+                lines.append(f"• {source['title']} — ⚠️ ошибка проверки")
+                continue
+            available = result.get("available") or {}
+            if not available:
+                lines.append(f"• {source['title']} — мест нет")
+                continue
+            parts = [
+                f"{departure} ({format_free(entry['free'], source['cap'])})"
+                for departure, entry in sorted(available.items())
+            ]
+            lines.append(f"• {source['title']}: " + ", ".join(parts))
+
+        links = []
+        for source in SOURCES:
+            result = results[date_str].get(source["id"]) or {}
+            if result.get("available"):
+                links.append(f"• {source['title']}: {source_url(source, config, date_str)}")
+        if links:
+            lines.append("")
+            lines.append("Бронировать:")
+            lines.extend(links)
 
     lines.append("")
-    lines.append("Сейчас свободно:")
-
-    for source in SOURCES:
-        source_id = source["id"]
-        result = results.get(source_id)
-        if result is None:
-            lines.append(f"• {source['title']} — ошибка проверки")
-            continue
-        available = result["available"]
-        if not available:
-            lines.append(f"• {source['title']} — мест нет")
-            continue
-        parts = [
-            f"{departure} ({format_free(entry['free'], source['capped'])})"
-            for departure, entry in sorted(available.items())
-        ]
-        lines.append(f"• {source['title']}: " + ", ".join(parts))
-
-    lines.append("")
-    lines.append("Проверить и бронировать:")
-    for source in SOURCES:
-        result = results.get(source["id"])
-        if result and result["available"]:
-            url = source["url"]
-            if source["kind"] == "atlasbus":
-                url = f"{url}?date={date_str}"
-            lines.append(f"• {source['title']}: {url}")
-
-    lines.append("")
-    lines.append("Тел. Могилёв: 788-55-33, 788-66-33")
+    lines.append(f"Тел.: {direction['phones']}")
     return "\n".join(lines)
 
 
@@ -397,10 +537,15 @@ def main(argv: list[str]) -> int:
         "yes",
     }
 
+    config = load_config()
+
     if test_send:
+        direction = DIRECTIONS[config["direction"]]
         try:
             send_telegram(
-                "✅ Тест монитора мест: Могилёв → Минск, 08.11.2026, 16:30–20:00.\n"
+                f"✅ Тест монитора мест: {direction['title']}.\n"
+                f"Даты: {', '.join(config['dates']) or '—'}\n"
+                f"Окно: {windows_label(config['windows'])}\n"
                 "Отслеживаются mogilevminsk.by, avto-slava.by, atlasbus.by.",
                 dry_run,
             )
@@ -409,87 +554,71 @@ def main(argv: list[str]) -> int:
             return 1
         return 0
 
-    sources = [
-        source
-        for source in SOURCES
-        if not SOURCES_FILTER or source["id"] in SOURCES_FILTER
-    ]
-
+    direction = DIRECTIONS[config["direction"]]
     log(
-        f"проверка {TARGET_DATE} ({weekday_ru(TARGET_DATE)}), "
-        f"окно {WINDOW_START}–{WINDOW_END}, источников: {len(sources)}"
+        f"проверка {direction['title']}, даты: {', '.join(config['dates']) or '—'}, "
+        f"окно: {windows_label(config['windows'])}"
     )
 
-    state = load_state()
-    previous_sources: dict[str, dict] = {}
-    if state.get("date") == TARGET_DATE:
-        previous_sources = state.get("sources") or {}
+    if not config["enabled"]:
+        log("мониторинг выключен в настройках — выхожу")
+        return 0
+    if not config["dates"]:
+        log("даты не выбраны — выхожу")
+        return 0
 
-    results: dict[str, dict] = {}
-    errors: list[str] = []
+    results, errors = collect(config)
 
-    for source in sources:
-        try:
-            rides = FETCHERS[source["kind"]](source, TARGET_DATE)
-        except Exception as exc:  # noqa: BLE001
-            log(f"  {source['title']}: ОШИБКА — {exc}")
-            errors.append(source["title"])
-            # сохраняем прошлое состояние источника, чтобы не прислать повторно
-            results[source["id"]] = {
-                "failed": True,
-                "rides": {},
-                "available": previous_sources.get(source["id"], {}),
+    previous = load_state()
+    previous_items = previous.get("items") or {}
+    same_direction = previous.get("direction") == config["direction"]
+
+    # Упавший источник не должен терять своё состояние: переносим прошлые данные.
+    for date_str, per_source in results.items():
+        for source_id, result in per_source.items():
+            if not result["failed"]:
+                continue
+            carried = (previous_items.get(date_str) or {}).get(source_id) or []
+            result["available"] = {
+                departure: {"free": 0, "carrier": None, "carried": True}
+                for departure in carried
             }
-            continue
 
-        available = {
-            departure: entry
-            for departure, entry in rides.items()
-            if entry["free"] >= MIN_FREE_SEATS
-        }
-        results[source["id"]] = {
-            "failed": False,
-            "rides": rides,
-            "available": available,
-        }
-        log(
-            f"  {source['title']}: рейсов в окне {len(rides)}, "
-            f"свободных {len(available)}"
-        )
+    if show_only:
+        for date_str, per_source in results.items():
+            log(f"\n{date_str}:")
+            for source in SOURCES:
+                result = per_source[source["id"]]
+                if result["failed"]:
+                    log(f"  {source['title']}: ошибка проверки")
+                    continue
+                log(f"  {source['title']}:")
+                if not result["rides"]:
+                    log("    рейсов в окне нет")
+                for departure, entry in sorted(result["rides"].items()):
+                    mark = "ЕСТЬ" if entry["free"] >= config["min_free_seats"] else "нет"
+                    carrier = f"  {entry['carrier']}" if entry.get("carrier") else ""
+                    log(f"    {departure}  свободно={entry['free']:<3} {mark}{carrier}")
+        return 0
 
-    if errors and len(errors) == len(sources):
+    if errors and len(errors) == sum(len(config["dates"]) for _ in SOURCES):
         log("ОШИБКА: все источники недоступны")
         return 1
 
-    if show_only:
-        for source in sources:
-            result = results[source["id"]]
+    newly: list[tuple[str, str, str]] = []
+    for date_str, per_source in results.items():
+        for source_id, result in per_source.items():
             if result["failed"]:
-                log(f"\n{source['title']}: ошибка проверки")
                 continue
-            log(f"\n{source['title']}:")
-            if not result["rides"]:
-                log("  рейсов в окне нет")
-            for departure, entry in result["rides"].items():
-                mark = "ЕСТЬ" if entry["free"] >= MIN_FREE_SEATS else "нет"
-                log(
-                    f"  {departure}  свободно={entry['free']:<3} {mark}"
-                    + (f"  {entry['carrier']}" if entry.get("carrier") else "")
-                )
-        return 0
-
-    newly: list[tuple[str, str]] = []
-    for source in sources:
-        source_id = source["id"]
-        if results[source_id]["failed"]:
-            continue
-        previous = previous_sources.get(source_id, {})
-        for departure in results[source_id]["available"]:
-            if departure not in previous:
-                newly.append((source_id, departure))
+            before = set()
+            if same_direction:
+                before = set((previous_items.get(date_str) or {}).get(source_id) or [])
+            for departure in result["available"]:
+                if departure not in before:
+                    newly.append((date_str, source_id, departure))
 
     if newly:
-        message = build_message(results, newly, TARGET_DATE)
+        message = build_message(config, results, newly)
         try:
             send_telegram(message, dry_run)
         except Exception as exc:  # noqa: BLE001
@@ -497,32 +626,32 @@ def main(argv: list[str]) -> int:
             return 1
 
     new_state = {
-        "date": TARGET_DATE,
-        "sources": {
-            source["id"]: sorted(results[source["id"]]["available"])
-            for source in sources
-        },
-        "observed": {
-            source["id"]: {
-                departure: entry["free"]
-                for departure, entry in sorted(results[source["id"]]["rides"].items())
-            }
-            for source in sources
-        },
         "updated": datetime.now(timezone.utc)
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z"),
+        "direction": config["direction"],
+        "items": {
+            date_str: {
+                source_id: sorted(result["available"])
+                for source_id, result in per_source.items()
+            }
+            for date_str, per_source in results.items()
+        },
+        "observed": {
+            date_str: {
+                source_id: {
+                    departure: entry["free"]
+                    for departure, entry in sorted(result["rides"].items())
+                }
+                for source_id, result in per_source.items()
+            }
+            for date_str, per_source in results.items()
+        },
     }
 
-    source_ids = {source["id"] for source in sources}
-    previous_effective = {
-        key: sorted(value) if isinstance(value, list) else value
-        for key, value in (state.get("sources") or {}).items()
-        if key in source_ids
-    }
-
-    if state.get("date") == TARGET_DATE and previous_effective == new_state["sources"]:
+    unchanged = same_direction and previous_items == new_state["items"]
+    if unchanged:
         log("состояние не изменилось — state.json не трогаем")
     else:
         save_state(new_state)

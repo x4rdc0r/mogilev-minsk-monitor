@@ -25,10 +25,12 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -39,23 +41,26 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TARGET_DATE: "2026-11-08"
-          FROM_CITY: "2"
-          DEST_CITY: "1"
-          WINDOW_START: "16:30"
-          WINDOW_END: "20:00"
-          MIN_FREE_SEATS: "1"
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
         run: python monitor.py ${{ inputs.test_message && '--test' || '' }}
 
       - name: Сохранить состояние
         run: |
-          if [ -z "$(git status --porcelain state.json)" ]; then
+          set -e
+          git add state.json
+          if git diff --cached --quiet; then
             echo "state.json без изменений"
             exit 0
           fi
-          git config user.name "seat-monitor"
-          git config user.email "seat-monitor@users.noreply.github.com"
-          git add state.json
-          git commit -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push
+          git -c user.name="seat-monitor" \
+              -c user.email="seat-monitor@users.noreply.github.com" \
+              commit -q -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase --autostash origin main >/dev/null 2>&1 || true
+            if git push; then
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "не удалось сохранить state.json" >&2
+          exit 1
