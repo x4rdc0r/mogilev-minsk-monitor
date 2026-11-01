@@ -185,7 +185,7 @@ def main_screen(cfg: dict) -> tuple[str, dict]:
         f"🧭 Направление: {direction['title']}\n"
         f"🕐 Время: {monitor.windows_label(cfg['windows'])}\n"
         f"{status}\n\n"
-        "Проверки идут автоматически каждые ~5 минут."
+        "Проверки идут автоматически каждые ~2–3 минуты."
     )
     rows = [
         [button("📅 Даты", "dates"), button("🧭 Направление", "dir")],
@@ -270,7 +270,7 @@ def minutes_ago(updated: str | None) -> str:
 def status_text(cfg: dict) -> str:
     state = fetch_state()
     if not state:
-        return "📊 Данных пока нет — дождитесь первой проверки (до 5 минут)."
+        return "📊 Данных пока нет — дождитесь первой проверки (до 2–3 минут)."
 
     state_direction = state.get("direction")
     direction = monitor.DIRECTIONS.get(state_direction or cfg["direction"])
@@ -322,7 +322,7 @@ def help_text() -> str:
         "🧭 Направление — Могилёв → Минск или обратно\n"
         "🕐 Время — окна выезда (до двух)\n\n"
         "Бот сам проверяет mogilevminsk.by, avto-slava.by и atlasbus.by "
-        "каждые ~5 минут и пишет, когда освобождается место."
+        "каждые ~2–3 минуты и пишет, когда освобождается место."
     )
 
 
