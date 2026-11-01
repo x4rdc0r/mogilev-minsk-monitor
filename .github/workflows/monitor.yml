@@ -10,6 +10,10 @@ on:
         description: "Проверить без отправки в Telegram"
         type: boolean
         default: false
+      test_message:
+        description: "Отправить тестовое сообщение в Telegram"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,7 +46,7 @@ jobs:
           WINDOW_END: "20:00"
           MIN_FREE_SEATS: "1"
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
-        run: python monitor.py
+        run: python monitor.py ${{ inputs.test_message && '--test' || '' }}
 
       - name: Сохранить состояние
         run: |
