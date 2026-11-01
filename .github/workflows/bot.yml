@@ -2,8 +2,9 @@ name: Bot menu
 
 on:
   schedule:
-    # каждый час: новый запуск отменяет предыдущий, простой ~20–40 секунд
-    - cron: "0 * * * *"
+    # Резервный запуск на случай обрыва цепочки (основной механизм —
+    # «Передать эстафету» в конце каждого прогона).
+    - cron: "7 */6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -12,12 +13,13 @@ permissions:
 
 concurrency:
   group: bot-menu
+  # Новый запуск (в т.ч. ручной, после правок кода) сразу заменяет старый.
   cancel-in-progress: true
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 355
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,4 +36,25 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python bot.py --max-minutes 65
+        run: python bot.py --max-minutes 345
+
+      - name: Передать эстафету
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for attempt in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/bot.yml/dispatches" \
+              -d '{"ref":"main"}')
+            if [ "$code" = "204" ]; then
+              echo "следующий запуск бота поставлен в очередь"
+              exit 0
+            fi
+            echo "dispatch вернул HTTP $code, повтор"
+            sleep 5
+          done
+          echo "::error::не удалось передать эстафету следующему запуску"
+          exit 1
