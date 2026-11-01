@@ -650,11 +650,9 @@ def main(argv: list[str]) -> int:
         },
     }
 
-    unchanged = same_direction and previous_items == new_state["items"]
-    if unchanged:
-        log("состояние не изменилось — state.json не трогаем")
-    else:
-        save_state(new_state)
+    # updated — время последней проверки, а не изменения наличия мест.
+    # Сохраняем и свежие наблюдения, даже если список свободных мест прежний.
+    save_state(new_state)
 
     if not newly:
         log("новых свободных мест нет")
