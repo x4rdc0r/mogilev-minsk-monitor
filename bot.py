@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -69,6 +70,7 @@ def send(chat_id: int | str, text: str, markup: dict | None = None) -> None:
     payload = {
         "chat_id": str(chat_id),
         "text": text,
+        "parse_mode": "HTML",
         "disable_web_page_preview": "true",
     }
     if markup:
@@ -81,6 +83,7 @@ def edit(chat_id: int | str, message_id: int, text: str, markup: dict | None = N
         "chat_id": str(chat_id),
         "message_id": str(message_id),
         "text": text,
+        "parse_mode": "HTML",
         "disable_web_page_preview": "true",
     }
     if markup:
@@ -349,7 +352,7 @@ def trigger_check() -> str:
         with urllib.request.urlopen(request, timeout=30) as response:
             response.read()
     except Exception as exc:  # noqa: BLE001
-        return f"⚠️ Не удалось запустить проверку: {exc}"
+        return f"⚠️ Не удалось запустить проверку: {html.escape(str(exc))}"
     return "🔄 Проверка запущена. Если место есть — уведомление придёт в течение минуты."
 
 
