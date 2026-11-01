@@ -247,11 +247,24 @@ def build_message(available: dict[str, int], newly: list[str], date_str: str) ->
 
 def main(argv: list[str]) -> int:
     show_only = "--show" in argv
+    test_send = "--test" in argv
     dry_run = "--dry-run" in argv or os.getenv("DRY_RUN", "").lower() in {
         "1",
         "true",
         "yes",
     }
+
+    if test_send:
+        try:
+            send_telegram(
+                "✅ Тест монитора мест: Могилёв → Минск, 08.11.2026, 16:30–20:00.\n"
+                "Уведомления работают.",
+                dry_run,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"ОШИБКА отправки: {exc}")
+            return 1
+        return 0
 
     log(
         f"проверка {TARGET_DATE} ({weekday_ru(TARGET_DATE)}), "

@@ -43,6 +43,9 @@ python monitor.py --show
 # проверка без отправки в Telegram
 python monitor.py --dry-run
 
+# отправить тестовое сообщение в Telegram (проверка токена и chat_id)
+python monitor.py --test
+
 # обычная проверка (+ уведомление, нужен TELEGRAM_BOT_TOKEN)
 $env:TELEGRAM_BOT_TOKEN="123456:ABC..."
 python monitor.py
@@ -75,11 +78,13 @@ TELEGRAM_BOT_TOKEN=123456789:AA...
 # 1. Авторизоваться в GitHub
 gh auth login
 
-# 2. Создать приватный репозиторий и запушить код
+# 2. Создать репозиторий и запушить код
+#    публичный — бесплатные минуты Actions без лимита; приватный тоже подойдёт,
+#    но тогда лучше поставить cron раз в 10 минут (2000 бесплатных минут/мес)
 git init
 git add .
 git commit -m "seat monitor"
-gh repo create mogilev-minsk-monitor --private --source . --push
+gh repo create mogilev-minsk-monitor --public --source . --push
 
 # 3. Добавить секреты
 gh secret set TELEGRAM_BOT_TOKEN --body "123456:ABC..."
