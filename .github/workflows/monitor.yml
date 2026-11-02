@@ -2,10 +2,10 @@ name: Seat monitor
 
 on:
   schedule:
-    # Резервный запуск, если цепочка почему-то оборвётся.
-    # GitHub cron работает в UTC и может опаздывать — поэтому основной
-    # механизм не cron, а самопродление запуска (см. шаг «Передать эстафету»).
-    - cron: "17 */6 * * *"
+    # Днём каждые 20 минут — страховка, если цепочка оборвётся.
+    # Ночью (01:00–08:00 по Минску) монитор не работает, поэтому окно
+    # ограничено: 05:00–21:59 UTC. GitHub cron работает в UTC.
+    - cron: "*/20 5-21 * * *"
   workflow_dispatch:
     inputs:
       once:
@@ -81,6 +81,13 @@ jobs:
           echo "цикл до $(date -u -d "@$deadline" +%Y-%m-%dT%H:%M:%SZ), интервал ${interval}s"
 
           while [ "$(date +%s)" -lt "$deadline" ]; do
+            # Ночью (01:00–08:00 по Минску) не работаем: 22:00–04:59 UTC.
+            hour=$((10#$(date -u +%H)))
+            if [ "$hour" -ge 22 ] || [ "$hour" -lt 5 ]; then
+              echo "вне окна 08:00–01:00 (Минск) — завершаю цепочку"
+              break
+            fi
+
             run=$((run + 1))
 
             # Подтягиваем настройки, которые бот записал в config.json,
@@ -123,6 +130,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          hour=$((10#$(date -u +%H)))
+          if [ "$hour" -ge 22 ] || [ "$hour" -lt 5 ]; then
+            echo "вне окна 08:00–01:00 (Минск) — эстафета не передаётся"
+            exit 0
+          fi
+
           for attempt in 1 2 3; do
             code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $GH_TOKEN" \
