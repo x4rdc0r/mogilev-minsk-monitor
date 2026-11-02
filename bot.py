@@ -356,6 +356,75 @@ def trigger_check() -> str:
     return "🔄 Проверка запущена. Если место есть — уведомление придёт в течение минуты."
 
 
+# ---------------------------------------------------------------- сторож монитора
+
+ACTIVE_START_UTC = 5   # 08:00 по Минску
+ACTIVE_END_UTC = 22    # 01:00 по Минску
+WATCHDOG_EVERY = 300   # как часто проверять цепочку, секунд
+
+
+def dispatch_chain() -> bool:
+    """Ставит в очередь длинную цепочку монитора."""
+    url = f"https://api.github.com/repos/{REPO}/actions/workflows/monitor.yml/dispatches"
+    body = json.dumps({"ref": "main"}).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {GH_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": monitor.USER_AGENT,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read()
+    except Exception as exc:  # noqa: BLE001
+        log(f"сторож: не удалось запустить цепочку: {exc}")
+        return False
+    return True
+
+
+def monitor_running() -> bool:
+    """Есть ли активный или ожидающий прогон монитора."""
+    url = (
+        f"https://api.github.com/repos/{REPO}/actions/workflows/monitor.yml/runs"
+        "?per_page=10"
+    )
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {GH_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": monitor.USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return any(
+        run.get("status") in {"in_progress", "queued", "pending", "waiting"}
+        for run in data.get("workflow_runs", [])
+    )
+
+
+def ensure_monitor() -> None:
+    """Поднимает цепочку, если она не идёт в активные часы."""
+    if LOCAL or not REPO or not GH_TOKEN:
+        return
+    if not (ACTIVE_START_UTC <= datetime.now(timezone.utc).hour < ACTIVE_END_UTC):
+        return
+    try:
+        if monitor_running():
+            return
+    except Exception as exc:  # noqa: BLE001
+        log(f"сторож: не удалось узнать статус монитора: {exc}")
+        return
+    if dispatch_chain():
+        log("сторож: цепочка монитора запущена")
+
+
 def parse_windows(text: str) -> list[dict] | None:
     windows: list[dict] = []
     for chunk in re.split(r"[,;]", text):
@@ -524,6 +593,7 @@ def run(max_minutes: int) -> None:
     deadline = time.time() + max_minutes * 60
     offset: int | None = None
     last_pull = time.time()
+    last_watchdog = 0.0
 
     try:
         backlog = call("getUpdates", {"offset": "-1", "limit": "1", "timeout": "0"})
@@ -535,6 +605,9 @@ def run(max_minutes: int) -> None:
     log(f"бот запущен, режим {'локальный' if LOCAL else 'GitHub Actions'}, до {max_minutes} мин")
 
     while time.time() < deadline:
+        if time.time() - last_watchdog >= WATCHDOG_EVERY:
+            ensure_monitor()
+            last_watchdog = time.time()
         try:
             updates = call(
                 "getUpdates",
