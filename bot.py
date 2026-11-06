@@ -132,36 +132,37 @@ def save_cfg(cfg: dict, chat_id: int | str) -> None:
 
 def git_commit(message: str, attempts: int = 5) -> None:
     """Коммит config.json с перебазированием — монитор тоже пушит state.json."""
+    identity = [
+        "-c",
+        "user.name=seat-bot",
+        "-c",
+        "user.email=seat-bot@users.noreply.github.com",
+    ]
     subprocess.run(["git", "add", str(CONFIG_PATH.name)], check=False)
     if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode == 0:
         return
 
     subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=seat-bot",
-            "-c",
-            "user.email=seat-bot@users.noreply.github.com",
-            "commit",
-            "-m",
-            message,
-        ],
+        ["git", *identity, "commit", "-m", message],
         check=False,
         capture_output=True,
     )
 
     for attempt in range(attempts):
+        # Идентичность нужна и при rebase: runner её не задаёт.
         pull = subprocess.run(
-            ["git", "pull", "--rebase", "--autostash"], capture_output=True, text=True
+            ["git", *identity, "pull", "--rebase", "--autostash"],
+            capture_output=True,
+            text=True,
         )
         if pull.returncode != 0:
+            log(f"git pull не удался (попытка {attempt + 1}): {pull.stderr.strip()[:200]}")
             subprocess.run(["git", "rebase", "--abort"], capture_output=True)
-
-        push = subprocess.run(["git", "push"], capture_output=True, text=True)
-        if push.returncode == 0:
-            return
-        log(f"git push не удался (попытка {attempt + 1}): {push.stderr.strip()[:200]}")
+        else:
+            push = subprocess.run(["git", "push"], capture_output=True, text=True)
+            if push.returncode == 0:
+                return
+            log(f"git push не удался (попытка {attempt + 1}): {push.stderr.strip()[:200]}")
         time.sleep(2)
 
     raise RuntimeError("не удалось сохранить config.json в git")
