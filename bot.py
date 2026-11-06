@@ -422,13 +422,16 @@ def stop_monitor() -> None:
     try:
         url = (
             f"https://api.github.com/repos/{REPO}/actions/workflows/monitor.yml/runs"
-            "?status=in_progress&per_page=10"
+            "?per_page=20"
         )
         with urllib.request.urlopen(
             urllib.request.Request(url, headers=headers), timeout=30
         ) as response:
             data = json.loads(response.read().decode("utf-8"))
+        active = {"in_progress", "queued", "pending", "waiting", "requested"}
         for run in data.get("workflow_runs", []):
+            if run.get("status") not in active:
+                continue
             cancel = urllib.request.Request(
                 f"https://api.github.com/repos/{REPO}/actions/runs/{run['id']}/cancel",
                 headers=headers,
