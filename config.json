@@ -3,7 +3,7 @@
   "dates": [
     "2026-11-08"
   ],
-  "direction": "minsk-mogilev",
+  "direction": "mogilev-minsk",
   "windows": [
     {
       "start": "16:30",
@@ -11,6 +11,6 @@
     }
   ],
   "min_free_seats": 1,
-  "updated_at": "2026-11-06T14:57:57Z",
+  "updated_at": "2026-11-06T14:58:01Z",
   "updated_by": "5173419011"
 }
