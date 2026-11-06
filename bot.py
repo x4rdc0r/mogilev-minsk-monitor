@@ -410,9 +410,45 @@ def monitor_running() -> bool:
     )
 
 
+def stop_monitor() -> None:
+    """Отменяет активные прогоны монитора при выключении."""
+    if LOCAL or not REPO or not GH_TOKEN:
+        return
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": monitor.USER_AGENT,
+    }
+    try:
+        url = (
+            f"https://api.github.com/repos/{REPO}/actions/workflows/monitor.yml/runs"
+            "?status=in_progress&per_page=10"
+        )
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=30
+        ) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        for run in data.get("workflow_runs", []):
+            cancel = urllib.request.Request(
+                f"https://api.github.com/repos/{REPO}/actions/runs/{run['id']}/cancel",
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(cancel, timeout=30) as response:
+                response.read()
+    except Exception as exc:  # noqa: BLE001
+        log(f"сторож: не удалось остановить монитор: {exc}")
+
+
 def ensure_monitor() -> None:
     """Поднимает цепочку, если она не идёт в активные часы."""
     if LOCAL or not REPO or not GH_TOKEN:
+        return
+    try:
+        if not monitor.load_config().get("enabled", True):
+            return
+    except Exception as exc:  # noqa: BLE001
+        log(f"сторож: не удалось прочитать настройки: {exc}")
         return
     if not (ACTIVE_START_UTC <= datetime.now(timezone.utc).hour < ACTIVE_END_UTC):
         return
@@ -520,6 +556,10 @@ def handle_callback(callback: dict) -> None:
     elif data == "toggle":
         cfg["enabled"] = not cfg["enabled"]
         save_cfg(cfg, chat_id)
+        if cfg["enabled"]:
+            ensure_monitor()
+        else:
+            stop_monitor()
         text, markup = main_screen(cfg)
         edit(chat_id, message_id, text, markup)
     elif data == "status":

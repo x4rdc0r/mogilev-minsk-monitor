@@ -67,6 +67,7 @@ jobs:
         run: python monitor.py ${{ inputs.test_message && '--test' || '' }}
 
       - name: Проверки в цикле
+        id: loop
         if: ${{ !(inputs.once || inputs.dry_run || inputs.test_message) }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -78,6 +79,7 @@ jobs:
           interval="${CHECK_INTERVAL:-150}"
           deadline=$(( $(date +%s) + ${LOOP_SECONDS:-20700} ))
           run=0
+          stopped=0
           echo "цикл до $(date -u -d "@$deadline" +%Y-%m-%dT%H:%M:%SZ), интервал ${interval}s"
 
           while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -94,6 +96,15 @@ jobs:
             # и правки кода. state.json к этому моменту закоммичен.
             if ! git pull --rebase --autostash origin main >/dev/null 2>&1; then
               git rebase --abort >/dev/null 2>&1 || true
+            fi
+
+            # Тумблер «Отключить» в боте: мягкий стоп — цепочка
+            # завершается и не передаёт эстафету.
+            enabled=$(python -c 'import json; print("1" if json.load(open("config.json", encoding="utf-8")).get("enabled", True) else "0")' 2>/dev/null || echo 1)
+            if [ "$enabled" = "0" ]; then
+              echo "мониторинг выключен в настройках — завершаю цепочку"
+              stopped=1
+              break
             fi
 
             echo "── проверка #$run, $(date -u +%H:%M:%SZ)"
@@ -125,8 +136,14 @@ jobs:
             sleep "$interval"
           done
 
+          if [ "$stopped" = "1" ]; then
+            echo "stopped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stopped=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Передать эстафету
-        if: ${{ success() && !(inputs.once || inputs.dry_run || inputs.test_message) && !inputs.no_relay }}
+        if: ${{ success() && !(inputs.once || inputs.dry_run || inputs.test_message) && !inputs.no_relay && steps.loop.outputs.stopped != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
