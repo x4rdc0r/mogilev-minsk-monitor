@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "dates": [
     "2026-11-08"
   ],
@@ -11,6 +11,6 @@
     }
   ],
   "min_free_seats": 1,
-  "updated_at": "2026-11-07T16:17:38Z",
+  "updated_at": "2026-11-08T11:55:52Z",
   "updated_by": "5173419011"
 }
