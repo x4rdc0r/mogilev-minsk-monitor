@@ -1,9 +1,11 @@
 {
-  "updated": "2026-11-08T09:53:42Z",
+  "updated": "2026-11-08T09:56:19Z",
   "direction": "mogilev-minsk",
   "items": {
     "2026-11-08": {
-      "mogilevminsk": [],
+      "mogilevminsk": [
+        "17:50"
+      ],
       "avtoslava": [],
       "atlasbus": []
     }
@@ -12,7 +14,7 @@
     "2026-11-08": {
       "mogilevminsk": {
         "16:30": -1,
-        "17:50": 0,
+        "17:50": 1,
         "18:30": -1,
         "20:00": -1
       },
